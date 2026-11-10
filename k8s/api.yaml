@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: active-learning-api, namespace: active-learning}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: active-learning-api}}
+  template:
+    metadata: {labels: {app: active-learning-api}}
+    spec:
+      containers:
+      - name: api
+        image: active-learning-api:latest
+        ports: [{containerPort: 8000}]
+        env:
+        - name: DATABASE_URL
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: DATABASE_URL}}
+        readinessProbe:
+          httpGet: {path: /health, port: 8000}
+          initialDelaySeconds: 5
+        resources:
+          requests: {cpu: "250m", memory: "512Mi"}
+          limits: {cpu: "1", memory: "2Gi"}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: active-learning-api, namespace: active-learning}
+spec:
+  selector: {app: active-learning-api}
+  ports: [{port: 8000, targetPort: 8000}]

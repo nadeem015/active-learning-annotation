@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://active:active@postgres:5432/active_learning
+    depends_on: [postgres]
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: active
+      POSTGRES_PASSWORD: active
+      POSTGRES_DB: active_learning
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+volumes:
+  pgdata:

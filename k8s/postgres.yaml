@@ -1,0 +1,39 @@
+# Demo credentials. For a real deployment create the secret out of band:
+#   kubectl -n active-learning create secret generic postgres-credentials \
+#     --from-literal=POSTGRES_USER=... --from-literal=POSTGRES_PASSWORD=... \
+#     --from-literal=DATABASE_URL=postgresql+psycopg://USER:PASSWORD@postgres:5432/active_learning
+apiVersion: v1
+kind: Secret
+metadata: {name: postgres-credentials, namespace: active-learning}
+type: Opaque
+stringData:
+  POSTGRES_USER: active
+  POSTGRES_PASSWORD: change-me
+  DATABASE_URL: postgresql+psycopg://active:change-me@postgres:5432/active_learning
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: postgres, namespace: active-learning}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata: {labels: {app: postgres}}
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        env:
+        - {name: POSTGRES_DB, value: active_learning}
+        - name: POSTGRES_USER
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: POSTGRES_USER}}
+        - name: POSTGRES_PASSWORD
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: POSTGRES_PASSWORD}}
+        ports: [{containerPort: 5432}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: postgres, namespace: active-learning}
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432, targetPort: 5432}]

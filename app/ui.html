@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Active Learning Lab</title>
+<style>
+  :root { --ink:#172033; --muted:#667085; --line:#e3e7ef; --blue:#315efb; --bg:#f4f6fb; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: var(--bg); color: var(--ink); }
+  header { background: #17233c; color: #fff; padding: 28px 24px; }
+  header h1 { margin: 0 0 6px; font-size: 26px; }
+  header p { margin: 0; opacity: .8; }
+  main { max-width: 1100px; margin: 24px auto; padding: 0 16px; display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .card { background: #fff; border-radius: 14px; padding: 20px; box-shadow: 0 2px 12px #0001; margin-bottom: 18px; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button, select, input { font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid #ccd3e0; background: #fff; }
+  button.primary { background: var(--blue); color: #fff; border: 0; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .item { border: 1px solid var(--line); padding: 14px; border-radius: 10px; margin: 10px 0; }
+  .item p { margin: 6px 0 10px; font-size: 15px; }
+  .meta { font-size: 12px; color: var(--muted); }
+  .bar { height: 6px; background: #eef2ff; border-radius: 3px; overflow: hidden; margin-top: 4px; }
+  .bar span { display: block; height: 100%; background: #f59e0b; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { background: #eef2ff; border-radius: 10px; padding: 12px; }
+  .stat b { display: block; font-size: 22px; }
+  .stat small { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  .muted { color: var(--muted); font-size: 13px; }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #17233c; color: #fff; padding: 10px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Uncertainty-Driven Active Learning</h1>
+  <p>Label the examples the model is least sure about, retrain, and watch the score climb.</p>
+</header>
+<main>
+  <div>
+    <div class="card">
+      <h2>1. Start an experiment</h2>
+      <div class="row">
+        <label>Seed labels <input id="seed" type="number" value="12" min="3" style="width:80px"></label>
+        <button class="primary" onclick="init()">Initialize</button>
+      </div>
+      <p class="muted">Takes a few labelled seed examples, hides the labels of the remaining pool, and keeps a held-out test set.</p>
+    </div>
+
+    <div class="card">
+      <h2>2. Query the most informative examples</h2>
+      <div class="row">
+        <select id="strategy" title="Query strategy">
+          <option value="entropy">Entropy</option>
+          <option value="least_confidence">Least confidence</option>
+          <option value="margin">Margin</option>
+          <option value="random">Random (baseline)</option>
+        </select>
+        <label>Batch <input id="batch" type="number" value="5" min="1" max="100" style="width:70px"></label>
+        <button class="primary" id="queryBtn" onclick="query()" disabled>Query next batch</button>
+      </div>
+      <div id="items"><p class="muted">Initialize first, then query a batch.</p></div>
+      <div class="row"><button class="primary" id="submitBtn" onclick="submitLabels()" disabled>Submit labels &amp; retrain</button></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Status</h2>
+      <div class="stats">
+        <div class="stat"><b id="sCycle">–</b><small>cycle</small></div>
+        <div class="stat"><b id="sLabeled">–</b><small>labelled</small></div>
+        <div class="stat"><b id="sPool">–</b><small>unlabelled pool</small></div>
+        <div class="stat"><b id="sF1">–</b><small>test macro-F1</small></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Learning curve</h2>
+      <table><thead><tr><th>Cycle</th><th>Labels</th><th>Accuracy</th><th>Macro-F1</th></tr></thead><tbody id="history"></tbody></table>
+    </div>
+  </div>
+</main>
+<div id="toast"></div>
+<script>
+let selected = [], labels = [], history = [];
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2500); }
+
+async function api(url, body) {
+  const res = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const data = await res.json();
+  if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+  return data;
+}
+
+function record(cycle, metrics, n) {
+  if (!metrics) return;
+  history.push({ cycle, n, ...metrics });
+  $('history').innerHTML = history.map(h => `<tr><td>${h.cycle}</td><td>${h.n}</td><td>${h.accuracy.toFixed(3)}</td><td>${h.f1_macro.toFixed(3)}</td></tr>`).join('');
+  $('sF1').textContent = metrics.f1_macro.toFixed(3);
+}
+
+async function refresh() {
+  const s = await api('/api/v1/status');
+  $('sCycle').textContent = s.cycle; $('sLabeled').textContent = s.labeled; $('sPool').textContent = s.unlabeled_pool;
+  $('queryBtn').disabled = !s.experiment;
+  return s;
+}
+
+async function init() {
+  try {
+    labels = (await api('/api/v1/labels')).labels;
+    const r = await api('/api/v1/initialize', { seed_size: +$('seed').value, strategy: $('strategy').value, batch_size: +$('batch').value });
+    history = []; selected = []; $('items').innerHTML = '<p class="muted">Ready. Query a batch.</p>'; $('submitBtn').disabled = true;
+    record(0, r.metrics, r.seed_size);
+    await refresh(); toast('Experiment initialized');
+  } catch (e) { toast(e.message); }
+}
+
+async function query() {
+  try {
+    const r = await api('/api/v1/query', { strategy: $('strategy').value, batch_size: +$('batch').value });
+    selected = r.selected || [];
+    $('items').innerHTML = selected.length ? selected.map((d, i) => `
+      <div class="item">
+        <div class="meta">model guess <b>${esc(d.predicted_label)}</b> · confidence ${d.confidence} · uncertainty ${d.uncertainty}</div>
+        <div class="bar"><span style="width:${Math.min(100, d.uncertainty * 100)}%"></span></div>
+        <p>${esc(d.text)}</p>
+        <select id="label${i}">${labels.map(l => `<option ${l === d.predicted_label ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      </div>`).join('') : '<p class="muted">The pool is empty — every example is labelled.</p>';
+    $('submitBtn').disabled = !selected.length;
+  } catch (e) { toast(e.message); }
+}
+
+async function submitLabels() {
+  try {
+    const annotations = selected.map((d, i) => ({ document_id: d.id, label: $('label' + i).value }));
+    const r = await api('/api/v1/annotate', { annotations });
+    record(r.cycle, r.metrics, r.training_size);
+    selected = []; $('items').innerHTML = '<p class="muted">Model retrained. Query the next batch.</p>'; $('submitBtn').disabled = true;
+    await refresh(); toast(`Cycle ${r.cycle}: macro-F1 ${r.metrics ? r.metrics.f1_macro.toFixed(3) : 'n/a'}`);
+  } catch (e) { toast(e.message); }
+}
+
+api('/api/v1/labels').then(r => labels = r.labels).catch(() => {});
+refresh().catch(() => {});
+</script>
+</body>
+</html>

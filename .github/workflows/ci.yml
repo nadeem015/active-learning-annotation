@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: Experiment smoke run
+        run: python research/run_experiment.py --seeds 1 --cycles 3 --output /tmp/results.csv
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t active-learning-api .
+      - name: Start container and check health
+        run: |
+          docker run -d -p 8000:8000 --name api active-learning-api
+          for i in $(seq 1 30); do curl -sf http://localhost:8000/health && exit 0; sleep 2; done
+          docker logs api; exit 1
